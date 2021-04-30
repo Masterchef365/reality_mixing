@@ -18,7 +18,6 @@ use realsense_rust::{
 use std::{
     collections::HashSet,
     convert::TryFrom,
-    io::{self, Write},
     time::Duration,
 };
 
@@ -72,7 +71,10 @@ impl MainLoop for App {
             .enable_device_from_serial(devices[0].info(Rs2CameraInfo::SerialNumber).unwrap())?
             .disable_all_streams()?
             .enable_stream(Rs2StreamKind::Depth, None, 640, 480, Rs2Format::Z16, 60)?;
-        let mut depth_camera_pipeline = pipeline.start(Some(config))?;
+        let depth_camera_pipeline = pipeline.start(Some(config))?;
+
+        let intrinsics = depth_camera_pipeline.profile().streams().get(0).unwrap().intrinsics()?;
+        dbg!(intrinsics.distortion());
 
         // ############################## Vulkan graphics stuff ############################## 
         let starter_kit = StarterKit::new(core.clone(), &mut platform)?;
@@ -172,11 +174,11 @@ impl MainLoop for App {
                 let slice = std::slice::from_raw_parts(data.cast::<u16>(), size);
                 for (row_idx, row) in slice.chunks_exact(DEPTH_WIDTH).enumerate() {
                     for (col_idx, col) in row.iter().enumerate() {
-                        let x = col_idx as f32 / 100.;
-                        let y = row_idx as f32 / 100.;
+                        let x = (DEPTH_WIDTH - col_idx) as f32 / 100.;
+                        let y = (DEPTH_HEIGHT - row_idx) as f32 / 100.;
                         let z = *col as f32 / 100.;
                         pts.extend_from_slice(&[x, y, z]);
-                        pts.extend_from_slice(&[1.; 3]);
+                        pts.extend_from_slice(&[x, y, 0.]);
                     }
                 }
             }
@@ -203,6 +205,17 @@ impl MainLoop for App {
                 command_buffer,
                 vk::PipelineBindPoint::GRAPHICS,
                 self.pipeline,
+            );
+
+            let matrix = nalgebra::Matrix4::from_euler_angles(0., self.anim, 0.);
+
+            core.device.cmd_push_constants(
+                command_buffer,
+                self.pipeline_layout,
+                vk::ShaderStageFlags::VERTEX,
+                0,
+                std::mem::size_of::<[f32; 4 * 4]>() as u32,
+                matrix.as_ptr() as _,
             );
 
             core.device.cmd_bind_vertex_buffers(
