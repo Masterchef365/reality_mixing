@@ -1,0 +1,12 @@
+[package]
+name = "reality_mixing"
+version = "0.1.0"
+authors = ["Masterchef365 <duncan.freeman1@gmail.com>"]
+edition = "2018"
+
+[dependencies]
+anyhow = "1"
+nalgebra = "0.25"
+watertender = { path = "../watertender" }
+realsense-rust = { git = "https://gitlab.com/tangram-vision-oss/realsense-rust", branch = "main" }
+bytemuck = "1.5"
