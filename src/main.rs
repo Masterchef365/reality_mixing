@@ -18,27 +18,11 @@ use realsense_rust::{
 };
 use std::{collections::HashSet, convert::TryFrom, time::Duration};
 
-fn deproject(intrin: &Rs2Intrinsics, x: usize, y: usize, depth: u16) -> [f32; 3] {
-    let distort = intrin.distortion();
-    debug_assert_eq!(distort.model, Rs2DistortionModel::BrownConradyInverse);
-
+fn mkfloat(x: usize, y: usize, depth: u16) -> [f32; 3] {
     let x = x as f32;
     let y = y as f32;
     let depth = depth as f32;
-
-    let x = (x - intrin.ppx()) / intrin.fx();
-    let y = (y - intrin.ppy()) / intrin.fy();
-
-    let coeffs = distort.coeffs;
-    let r2 = x * x + y * y;
-    let f = 1. + coeffs[0] * r2 + coeffs[1] * r2 * r2 + coeffs[4] * r2 * r2 * r2;
-    let ux = x * f + 2. * coeffs[2] * x * y + coeffs[3] * (r2 + 2. * x * x);
-    let uy = y * f + 2. * coeffs[3] * x * y + coeffs[2] * (r2 + 2. * y * y);
-
-    let x = ux * depth;
-    let y = uy * depth;
-    let z = depth;
-    [x, y, z]
+    [x, y, depth]
 }
 
 struct App {
@@ -65,6 +49,26 @@ fn main() -> Result<()> {
 struct SceneData {
     cameras: [f32; 4 * 4 * 2],
     anim: f32,
+    ppx: f32,
+    ppy: f32,
+    fx: f32,
+    fy: f32,
+    coeffs: [f32; 5],
+}
+
+impl SceneData {
+    pub fn new(cameras: [f32; 4 * 4 * 2], anim: f32, intrin: &Rs2Intrinsics) -> Self {
+        assert!(intrin.distortion().model == Rs2DistortionModel::BrownConradyInverse);
+        SceneData {
+            anim,
+            cameras,
+            ppx: intrin.ppx(),
+            ppy: intrin.ppy(),
+            fx: intrin.fx(),
+            fy: intrin.fy(),
+            coeffs: intrin.distortion().coeffs
+        }
+    }
 }
 
 unsafe impl bytemuck::Zeroable for SceneData {}
@@ -199,9 +203,8 @@ impl MainLoop for App {
                 let slice = std::slice::from_raw_parts(data.cast::<u16>(), size);
                 for (row_idx, row) in slice.chunks_exact(DEPTH_WIDTH).enumerate() {
                     for (col_idx, depth) in row.iter().enumerate() {
-                        let [x, y, z] = deproject(&self.intrinsics, col_idx, row_idx, *depth);
-                        let ds = 1000.;
-                        pts.extend_from_slice(&[-x / ds, -y / ds, z / ds]);
+                        let [x, y, z] = mkfloat(col_idx, row_idx, *depth);
+                        pts.extend_from_slice(&[x, y, z]);
                         pts.extend_from_slice(&[
                             col_idx as f32 / DEPTH_WIDTH as f32,
                             row_idx as f32 / DEPTH_HEIGHT as f32,
@@ -268,10 +271,7 @@ impl MainLoop for App {
 
         self.scene_ubo.upload(
             self.starter_kit.frame,
-            &SceneData {
-                cameras,
-                anim: self.anim,
-            },
+            &SceneData::new(cameras, self.anim, &self.intrinsics),
         )?;
 
         self.anim += 0.001;
