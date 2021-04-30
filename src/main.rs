@@ -199,7 +199,7 @@ impl MainLoop for App {
         platform: Platform<'_>,
     ) -> Result<PlatformReturn> {
         // ############################## Realsense to Vulkan ##############################
-        let timeout = Duration::from_millis(10);
+        let timeout = Duration::from_millis(0);
         let last_frames = match &self.last_frames {
             Some(l) => l,
             None => {
