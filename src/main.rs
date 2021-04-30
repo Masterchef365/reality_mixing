@@ -12,9 +12,9 @@ use realsense_rust::{
     base::Rs2Intrinsics,
     config::Config,
     context::Context,
-    frame::{DepthFrame, CompositeFrame},
+    frame::{CompositeFrame, DepthFrame},
     kind::{Rs2CameraInfo, Rs2DistortionModel, Rs2Format, Rs2ProductLine, Rs2StreamKind},
-    pipeline::{ActivePipeline, InactivePipeline, FrameWaitError},
+    pipeline::{ActivePipeline, FrameWaitError, InactivePipeline},
 };
 use std::{collections::HashSet, convert::TryFrom, time::Duration};
 
@@ -67,7 +67,7 @@ impl SceneData {
             ppy: intrin.ppy(),
             fx: intrin.fx(),
             fy: intrin.fy(),
-            coeffs: intrin.distortion().coeffs
+            coeffs: intrin.distortion().coeffs,
         }
     }
 }
@@ -77,6 +77,7 @@ unsafe impl bytemuck::Pod for SceneData {}
 
 const DEPTH_WIDTH: usize = 640;
 const DEPTH_HEIGHT: usize = 480;
+const RS_FRAMERATE: usize = 60;
 const N_POINTS: usize = DEPTH_WIDTH * DEPTH_HEIGHT;
 const POINTCLOUD_SIZE: usize = N_POINTS * 3 * 2 * std::mem::size_of::<f32>();
 
@@ -95,7 +96,14 @@ impl MainLoop for App {
         config
             .enable_device_from_serial(devices[0].info(Rs2CameraInfo::SerialNumber).unwrap())?
             .disable_all_streams()?
-            .enable_stream(Rs2StreamKind::Depth, None, 640, 480, Rs2Format::Z16, 10)?;
+            .enable_stream(
+                Rs2StreamKind::Depth,
+                None,
+                DEPTH_WIDTH,
+                DEPTH_HEIGHT,
+                Rs2Format::Z16,
+                RS_FRAMERATE,
+            )?;
         let depth_camera_pipeline = pipeline.start(Some(config))?;
 
         let intrinsics = depth_camera_pipeline
@@ -205,9 +213,7 @@ impl MainLoop for App {
                 self.last_frames = Some(f);
                 self.last_frames.as_ref().unwrap()
             }
-            Err(FrameWaitError::DidTimeoutBeforeFrameArrival) => {
-                last_frames
-            }
+            Err(FrameWaitError::DidTimeoutBeforeFrameArrival) => last_frames,
             Err(e) => Err(e)?,
         };
 
