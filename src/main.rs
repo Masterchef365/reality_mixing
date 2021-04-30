@@ -76,8 +76,8 @@ unsafe impl bytemuck::Zeroable for SceneData {}
 unsafe impl bytemuck::Pod for SceneData {}
 
 const DEPTH_WIDTH: usize = 640;
-const DEPTH_HEIGHT: usize = 480;
-const RS_FRAMERATE: usize = 60;
+const DEPTH_HEIGHT: usize = 240;
+const RS_FRAMERATE: usize = 110;
 const N_POINTS: usize = DEPTH_WIDTH * DEPTH_HEIGHT;
 const POINTCLOUD_SIZE: usize = N_POINTS * 3 * 2 * std::mem::size_of::<f32>();
 

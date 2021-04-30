@@ -21,7 +21,7 @@ vec3 deproject(in vec3 pixel);
 
 void main() {
     gl_Position = camera[gl_ViewIndex] * vec4(deproject(inPosition) / 1000., 1.0);
-    gl_PointSize = 2.;
+    gl_PointSize = 1.;
     fragColor = inColor;
 }
 
@@ -29,7 +29,7 @@ vec3 deproject(in vec3 pixel) {
     vec2 xy = (pixel.xy - vec2(ppx, ppy)) / vec2(fx, fy);
     float r2 = dot(xy, xy);
     float f = 1 + coeffs[0]*r2 + coeffs[1]*r2*r2 + coeffs[4]*r2*r2*r2;
-    vec2 uv = xy * f + 2.*vec2(coeffs[2], coeffs[3]) * xy.x * xy.y + (r2 + 2 * xy.x * xy.y) * vec2(coeffs[3], coeffs[2]);
+    vec2 uv = xy * f + 2.*vec2(coeffs[2], coeffs[3]) * xy.x * xy.y + (r2 + 2 * xy * xy) * vec2(coeffs[3], coeffs[2]);
     return pixel.z * vec3(-uv, 1.);
 }
 
