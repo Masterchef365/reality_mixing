@@ -12,9 +12,9 @@ use realsense_rust::{
     base::Rs2Intrinsics,
     config::Config,
     context::Context,
-    frame::DepthFrame,
+    frame::{DepthFrame, CompositeFrame},
     kind::{Rs2CameraInfo, Rs2DistortionModel, Rs2Format, Rs2ProductLine, Rs2StreamKind},
-    pipeline::{ActivePipeline, InactivePipeline},
+    pipeline::{ActivePipeline, InactivePipeline, FrameWaitError},
 };
 use std::{collections::HashSet, convert::TryFrom, time::Duration};
 
@@ -29,6 +29,7 @@ struct App {
     pointcloud_gpu: Vec<ManagedBuffer>,
     depth_camera_pipeline: ActivePipeline,
     intrinsics: Rs2Intrinsics,
+    last_frames: Option<CompositeFrame>,
 
     pipeline: vk::Pipeline,
     pipeline_layout: vk::PipelineLayout,
@@ -94,7 +95,7 @@ impl MainLoop for App {
         config
             .enable_device_from_serial(devices[0].info(Rs2CameraInfo::SerialNumber).unwrap())?
             .disable_all_streams()?
-            .enable_stream(Rs2StreamKind::Depth, None, 640, 480, Rs2Format::Z16, 60)?;
+            .enable_stream(Rs2StreamKind::Depth, None, 640, 480, Rs2Format::Z16, 10)?;
         let depth_camera_pipeline = pipeline.start(Some(config))?;
 
         let intrinsics = depth_camera_pipeline
@@ -170,6 +171,7 @@ impl MainLoop for App {
             .collect::<Result<_>>()?;
 
         Ok(Self {
+            last_frames: None,
             intrinsics,
             depth_camera_pipeline,
             pointcloud_gpu,
@@ -189,8 +191,26 @@ impl MainLoop for App {
         platform: Platform<'_>,
     ) -> Result<PlatformReturn> {
         // ############################## Realsense to Vulkan ##############################
-        let timeout = Duration::from_millis(5000);
-        let frames = self.depth_camera_pipeline.wait(Some(timeout))?;
+        let timeout = Duration::from_millis(10);
+        let last_frames = match &self.last_frames {
+            Some(l) => l,
+            None => {
+                self.last_frames = Some(self.depth_camera_pipeline.wait(None)?);
+                self.last_frames.as_ref().unwrap()
+            }
+        };
+
+        let frames = match self.depth_camera_pipeline.wait(Some(timeout)) {
+            Ok(f) => {
+                self.last_frames = Some(f);
+                self.last_frames.as_ref().unwrap()
+            }
+            Err(FrameWaitError::DidTimeoutBeforeFrameArrival) => {
+                last_frames
+            }
+            Err(e) => Err(e)?,
+        };
+
         let mut depth_frames = frames.frames_of_type::<DepthFrame>();
 
         if !depth_frames.is_empty() {
