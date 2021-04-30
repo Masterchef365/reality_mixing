@@ -1,30 +1,50 @@
 use shortcuts::{
     launch,
+    memory::{self, ManagedBuffer},
     shader,
     starter_kit::{self, StarterKit},
-    memory::{self, ManagedBuffer},
     FrameDataUbo, MultiPlatformCamera,
 };
 use watertender::*;
 
 use anyhow::{ensure, Result};
 use realsense_rust::{
+    base::Rs2Intrinsics,
     config::Config,
     context::Context,
     frame::DepthFrame,
-    kind::{Rs2CameraInfo, Rs2Format, Rs2ProductLine, Rs2StreamKind},
-    pipeline::{InactivePipeline, ActivePipeline},
+    kind::{Rs2CameraInfo, Rs2DistortionModel, Rs2Format, Rs2ProductLine, Rs2StreamKind},
+    pipeline::{ActivePipeline, InactivePipeline},
 };
-use std::{
-    collections::HashSet,
-    convert::TryFrom,
-    time::Duration,
-};
+use std::{collections::HashSet, convert::TryFrom, time::Duration};
 
+fn deproject(intrin: &Rs2Intrinsics, x: usize, y: usize, depth: u16) -> [f32; 3] {
+    let distort = intrin.distortion();
+    debug_assert_eq!(distort.model, Rs2DistortionModel::BrownConradyInverse);
+
+    let x = x as f32;
+    let y = y as f32;
+    let depth = depth as f32;
+
+    let x = (x - intrin.ppx()) / intrin.fx();
+    let y = (y - intrin.ppy()) / intrin.fy();
+
+    let coeffs = distort.coeffs;
+    let r2 = x * x + y * y;
+    let f = 1. + coeffs[0] * r2 + coeffs[1] * r2 * r2 + coeffs[4] * r2 * r2 * r2;
+    let ux = x * f + 2. * coeffs[2] * x * y + coeffs[3] * (r2 + 2. * x * x);
+    let uy = y * f + 2. * coeffs[3] * x * y + coeffs[2] * (r2 + 2. * y * y);
+
+    let x = ux * depth;
+    let y = uy * depth;
+    let z = depth;
+    [x, y, z]
+}
 
 struct App {
     pointcloud_gpu: Vec<ManagedBuffer>,
     depth_camera_pipeline: ActivePipeline,
+    intrinsics: Rs2Intrinsics,
 
     pipeline: vk::Pipeline,
     pipeline_layout: vk::PipelineLayout,
@@ -57,7 +77,7 @@ const POINTCLOUD_SIZE: usize = N_POINTS * 3 * 2 * std::mem::size_of::<f32>();
 
 impl MainLoop for App {
     fn new(core: &SharedCore, mut platform: Platform<'_>) -> Result<Self> {
-        // ############################## Realsense stuff ############################## 
+        // ############################## Realsense stuff ##############################
         let mut queried_devices = HashSet::new();
         queried_devices.insert(Rs2ProductLine::Sr300);
         let context = Context::new()?;
@@ -73,10 +93,14 @@ impl MainLoop for App {
             .enable_stream(Rs2StreamKind::Depth, None, 640, 480, Rs2Format::Z16, 60)?;
         let depth_camera_pipeline = pipeline.start(Some(config))?;
 
-        let intrinsics = depth_camera_pipeline.profile().streams().get(0).unwrap().intrinsics()?;
-        dbg!(intrinsics.distortion());
+        let intrinsics = depth_camera_pipeline
+            .profile()
+            .streams()
+            .get(0)
+            .unwrap()
+            .intrinsics()?;
 
-        // ############################## Vulkan graphics stuff ############################## 
+        // ############################## Vulkan graphics stuff ##############################
         let starter_kit = StarterKit::new(core.clone(), &mut platform)?;
 
         // Camera
@@ -137,11 +161,12 @@ impl MainLoop for App {
             .sharing_mode(vk::SharingMode::EXCLUSIVE)
             .usage(vk::BufferUsageFlags::VERTEX_BUFFER);
 
-        let pointcloud_gpu = (0..starter_kit::FRAMES_IN_FLIGHT).map(|_| {
-            ManagedBuffer::new(core.clone(), ci, memory::UsageFlags::UPLOAD)
-        }).collect::<Result<_>>()?;
+        let pointcloud_gpu = (0..starter_kit::FRAMES_IN_FLIGHT)
+            .map(|_| ManagedBuffer::new(core.clone(), ci, memory::UsageFlags::UPLOAD))
+            .collect::<Result<_>>()?;
 
         Ok(Self {
+            intrinsics,
             depth_camera_pipeline,
             pointcloud_gpu,
             camera,
@@ -159,7 +184,7 @@ impl MainLoop for App {
         core: &SharedCore,
         platform: Platform<'_>,
     ) -> Result<PlatformReturn> {
-        // ############################## Realsense to Vulkan ############################## 
+        // ############################## Realsense to Vulkan ##############################
         let timeout = Duration::from_millis(5000);
         let frames = self.depth_camera_pipeline.wait(Some(timeout))?;
         let mut depth_frames = frames.frames_of_type::<DepthFrame>();
@@ -173,21 +198,23 @@ impl MainLoop for App {
                 let data = depth_frame.get_data() as *const std::os::raw::c_void;
                 let slice = std::slice::from_raw_parts(data.cast::<u16>(), size);
                 for (row_idx, row) in slice.chunks_exact(DEPTH_WIDTH).enumerate() {
-                    for (col_idx, col) in row.iter().enumerate() {
-                        let x = (DEPTH_WIDTH - col_idx) as f32 / 100.;
-                        let y = (DEPTH_HEIGHT - row_idx) as f32 / 100.;
-                        let z = *col as f32 / 100.;
-                        pts.extend_from_slice(&[x, y, z]);
-                        pts.extend_from_slice(&[x, y, 0.]);
+                    for (col_idx, depth) in row.iter().enumerate() {
+                        let [x, y, z] = deproject(&self.intrinsics, col_idx, row_idx, *depth);
+                        let ds = 1000.;
+                        pts.extend_from_slice(&[-x / ds, -y / ds, z / ds]);
+                        pts.extend_from_slice(&[
+                            col_idx as f32 / DEPTH_WIDTH as f32,
+                            row_idx as f32 / DEPTH_HEIGHT as f32,
+                            0.,
+                        ]);
                     }
                 }
             }
-            self.pointcloud_gpu[self.starter_kit.frame].write_bytes(0, bytemuck::cast_slice(&pts))?;
+            self.pointcloud_gpu[self.starter_kit.frame]
+                .write_bytes(0, bytemuck::cast_slice(&pts))?;
         }
 
-
-
-        // ############################## Command buffer ############################## 
+        // ############################## Command buffer ##############################
         let cmd = self.starter_kit.begin_command_buffer(frame)?;
         let command_buffer = cmd.command_buffer;
         unsafe {
@@ -207,6 +234,7 @@ impl MainLoop for App {
                 self.pipeline,
             );
 
+            /*
             let matrix = nalgebra::Matrix4::from_euler_angles(0., self.anim, 0.);
 
             core.device.cmd_push_constants(
@@ -217,6 +245,7 @@ impl MainLoop for App {
                 std::mem::size_of::<[f32; 4 * 4]>() as u32,
                 matrix.as_ptr() as _,
             );
+            */
 
             core.device.cmd_bind_vertex_buffers(
                 command_buffer,
@@ -231,13 +260,8 @@ impl MainLoop for App {
                 self.pipeline,
             );
 
-            core.device.cmd_draw(
-                command_buffer,
-                N_POINTS as u32,
-                1,
-                0,
-                0,
-            );
+            core.device
+                .cmd_draw(command_buffer, N_POINTS as u32, 1, 0, 0);
         }
 
         let (ret, cameras) = self.camera.get_matrices(platform)?;
