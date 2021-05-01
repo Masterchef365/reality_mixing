@@ -119,31 +119,10 @@ impl MainLoop for App {
         // Camera
         let camera = MultiPlatformCamera::new(&mut platform);
 
-        const SCENE_DATA_BINDING: u32 = 0;
-        let bindings = [vk::DescriptorSetLayoutBindingBuilder::new()
-            .binding(SCENE_DATA_BINDING)
-            .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-            .descriptor_count(1)
-            .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT)];
-
-        let descriptor_set_layout_ci =
-            vk::DescriptorSetLayoutCreateInfoBuilder::new().bindings(&bindings);
-
-        let descriptor_set_layout = unsafe {
-            core.device
-                .create_descriptor_set_layout(&descriptor_set_layout_ci, None, None)
-        }
-        .result()?;
-
         // Scene data
-        let scene_ubo = FrameDataUbo::new(
-            core.clone(),
-            starter_kit::FRAMES_IN_FLIGHT,
-            descriptor_set_layout,
-            SCENE_DATA_BINDING,
-        )?;
+        let scene_ubo = FrameDataUbo::new(core.clone(), starter_kit::FRAMES_IN_FLIGHT)?;
 
-        let descriptor_set_layouts = [descriptor_set_layout];
+        let descriptor_set_layouts = [scene_ubo.descriptor_set_layout()];
 
         // Pipeline layout
         let push_constant_ranges = [vk::PushConstantRangeBuilder::new()
