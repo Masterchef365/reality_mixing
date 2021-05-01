@@ -30,6 +30,7 @@ struct App {
     depth_camera_pipeline: ActivePipeline,
     intrinsics: Rs2Intrinsics,
     last_frames: Option<CompositeFrame>,
+    pointcloud_cpu: Vec<f32>,
 
     pipeline: vk::Pipeline,
     pipeline_layout: vk::PipelineLayout,
@@ -40,7 +41,7 @@ struct App {
 }
 
 fn main() -> Result<()> {
-    let info = AppInfo::default().validation(true);
+    let info = AppInfo::default().validation(cfg!(debug_assertions));
     let vr = std::env::args().count() > 1;
     launch::<App>(info, vr)
 }
@@ -157,7 +158,10 @@ impl MainLoop for App {
             .map(|_| ManagedBuffer::new(core.clone(), ci, memory::UsageFlags::UPLOAD))
             .collect::<Result<_>>()?;
 
+        let pointcloud_cpu = Vec::with_capacity(POINTCLOUD_SIZE);
+
         Ok(Self {
+            pointcloud_cpu,
             last_frames: None,
             intrinsics,
             depth_camera_pipeline,
@@ -202,15 +206,15 @@ impl MainLoop for App {
             let depth_frame = depth_frames.pop().unwrap();
             let size = depth_frame.get_data_size() / std::mem::size_of::<u16>();
             //let stride = depth_frame.stride() / std::mem::size_of::<u16>();
-            let mut pts = Vec::with_capacity(POINTCLOUD_SIZE);
+            self.pointcloud_cpu.clear();
             unsafe {
                 let data = depth_frame.get_data() as *const std::os::raw::c_void;
                 let slice = std::slice::from_raw_parts(data.cast::<u16>(), size);
                 for (row_idx, row) in slice.chunks_exact(DEPTH_WIDTH).enumerate() {
                     for (col_idx, depth) in row.iter().enumerate() {
                         let [x, y, z] = mkfloat(col_idx, row_idx, *depth);
-                        pts.extend_from_slice(&[x, y, z]);
-                        pts.extend_from_slice(&[
+                        self.pointcloud_cpu.extend_from_slice(&[x, y, z]);
+                        self.pointcloud_cpu.extend_from_slice(&[
                             col_idx as f32 / DEPTH_WIDTH as f32,
                             row_idx as f32 / DEPTH_HEIGHT as f32,
                             0.,
@@ -219,7 +223,7 @@ impl MainLoop for App {
                 }
             }
             self.pointcloud_gpu[self.starter_kit.frame]
-                .write_bytes(0, bytemuck::cast_slice(&pts))?;
+                .write_bytes(0, bytemuck::cast_slice(&self.pointcloud_cpu))?;
         }
 
         // ############################## Command buffer ##############################
